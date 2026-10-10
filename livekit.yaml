@@ -1,0 +1,14 @@
+# Local development config. The key/secret pair must match LIVEKIT_API_KEY / LIVEKIT_API_SECRET.
+port: 7880
+rtc:
+  tcp_port: 7881
+  udp_port: 7882
+  use_external_ip: false
+redis:
+  address: redis:6379
+keys:
+  devkey: qadam-dev-secret-change-me-0123456789abcdef
+webhook:
+  api_key: devkey
+  urls:
+    - http://backend:8000/api/livekit/webhook
