@@ -1,4 +1,7 @@
 # Qadam — MVP
+<img width="1823" height="913" alt="изображение" src="https://github.com/user-attachments/assets/9cccea1f-888b-40ad-b751-da2f85ded86b" />
+<img width="1811" height="933" alt="изображение" src="https://github.com/user-attachments/assets/34a1d712-54c0-408b-9ba2-79ae4dc315b3" />
+
 
 Meeting-to-task platform: **audio call → recording → Whisper transcript → AI draft tasks → human review → backlog / board.**
 
