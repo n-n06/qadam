@@ -25,3 +25,5 @@ export const MEETING_STATUS = {
   ready: "Готово",
   failed: "Ошибка",
 };
+
+export const ROLE_LABEL = { admin: "Администратор", lead: "Руководитель", member: "Участник" };

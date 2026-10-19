@@ -14,7 +14,23 @@ class User(SQLModel, table=True):
     __tablename__ = "users"
     id: Optional[int] = Field(default=None, primary_key=True)
     name: str
-    role: str = "member"  # "lead" is the default reviewer; real RBAC (F7) comes in Sprint 4
+    role: str = "member"  # admin | lead | member, see permissions.py (F7)
+    email: Optional[str] = Field(default=None, index=True, unique=True)  # stored lower-cased
+    password_hash: Optional[str] = None  # None = cannot log in
+    is_active: bool = True
+    created_at: Optional[datetime] = Field(default_factory=utcnow)
+
+
+class RefreshToken(SQLModel, table=True):
+    """Server side of the refresh cookie: only the SHA-256 of the token is stored. Rotated on every use."""
+
+    __tablename__ = "refresh_tokens"
+    id: Optional[int] = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="users.id", index=True)
+    token_hash: str = Field(index=True, unique=True)
+    created_at: datetime = Field(default_factory=utcnow)
+    expires_at: datetime
+    revoked_at: Optional[datetime] = None
 
 
 class Meeting(SQLModel, table=True):
@@ -26,6 +42,7 @@ class Meeting(SQLModel, table=True):
     ended_at: Optional[datetime] = None
     # scheduled -> live -> processing -> ready | failed
     status: str = "scheduled"
+    created_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
     room_name: str = ""
     egress_id: Optional[str] = None
     audio_path: Optional[str] = None
@@ -77,6 +94,7 @@ class Task(SQLModel, table=True):
     status: str = "todo"  # todo | in_progress | done
     origin_meeting_id: Optional[int] = Field(default=None, foreign_key="meetings.id")
     origin_quote: str = ""
+    created_by_id: Optional[int] = Field(default=None, foreign_key="users.id")
     created_at: datetime = Field(default_factory=utcnow)
 
 

@@ -8,40 +8,18 @@ from sqlmodel import Session, delete, select
 from ..config import get_settings
 from ..db import get_session
 from ..models import DraftTask, Meeting, Segment, User
-from ..schemas import (
-    MeetingCreate,
-    MeetingDetail,
-    MeetingOut,
-    SegmentOut,
-    TranscriptIn,
-    UserIn,
-    UserOut,
-)
+from ..permissions import has_permission
+from ..schemas import MeetingCreate, MeetingDetail, MeetingOut, SegmentOut, TranscriptIn
+from ..security import require
 from ..serializers import draft_out, meeting_out
 from ..services.pipeline import run_pipeline
 
-users_router = APIRouter(prefix="/api/users", tags=["users"])
 router = APIRouter(prefix="/api/meetings", tags=["meetings"])
 
 AUDIO_EXT = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".mp4", ".webm", ".flac", ".aac", ".mkv"}
+MAX_UPLOAD_BYTES = 1024 * 1024 * 1024  # 1 GB
 
 
-# ------------------------------------------------------------------ users
-@users_router.get("", response_model=list[UserOut])
-def list_users(session: Session = Depends(get_session)):
-    return session.exec(select(User).order_by(User.id)).all()
-
-
-@users_router.post("", response_model=UserOut, status_code=201)
-def create_user(body: UserIn, session: Session = Depends(get_session)):
-    user = User(name=body.name.strip(), role=body.role)
-    session.add(user)
-    session.commit()
-    session.refresh(user)
-    return user
-
-
-# ------------------------------------------------------------------ meetings
 def get_meeting_or_404(session: Session, meeting_id: int) -> Meeting:
     meeting = session.get(Meeting, meeting_id)
     if not meeting:
@@ -49,15 +27,29 @@ def get_meeting_or_404(session: Session, meeting_id: int) -> Meeting:
     return meeting
 
 
+def get_managed_meeting(session: Session, meeting_id: int, user: User) -> Meeting:
+    """The meeting, if `user` may run it: leads/admins any meeting, members only the ones they created."""
+    meeting = get_meeting_or_404(session, meeting_id)
+    if has_permission(user.role, "meetings.manage"):
+        return meeting
+    if meeting.created_by_id == user.id and has_permission(user.role, "meetings.manage_own"):
+        return meeting
+    raise HTTPException(403, "Управлять этой встречей может её автор или руководитель")
+
+
 @router.get("", response_model=list[MeetingOut])
-def list_meetings(session: Session = Depends(get_session)):
+def list_meetings(session: Session = Depends(get_session), _: User = Depends(require("meetings.read"))):
     meetings = session.exec(select(Meeting).order_by(Meeting.created_at.desc(), Meeting.id.desc())).all()
     return [meeting_out(session, m) for m in meetings]
 
 
 @router.post("", response_model=MeetingOut, status_code=201)
-def create_meeting(body: MeetingCreate, session: Session = Depends(get_session)):
-    meeting = Meeting(title=body.title.strip())
+def create_meeting(
+    body: MeetingCreate,
+    session: Session = Depends(get_session),
+    user: User = Depends(require("meetings.create")),
+):
+    meeting = Meeting(title=body.title.strip(), created_by_id=user.id)
     session.add(meeting)
     session.flush()
     meeting.room_name = f"meeting-{meeting.id}"
@@ -68,7 +60,7 @@ def create_meeting(body: MeetingCreate, session: Session = Depends(get_session))
 
 
 @router.get("/{meeting_id}", response_model=MeetingDetail)
-def get_meeting(meeting_id: int, session: Session = Depends(get_session)):
+def get_meeting(meeting_id: int, session: Session = Depends(get_session), _: User = Depends(require("meetings.read"))):
     meeting = get_meeting_or_404(session, meeting_id)
     segments = session.exec(
         select(Segment).where(Segment.meeting_id == meeting_id).order_by(Segment.start_sec, Segment.id)
@@ -88,9 +80,10 @@ def upload_audio(
     background: BackgroundTasks,
     file: UploadFile = File(...),
     session: Session = Depends(get_session),
+    user: User = Depends(require("meetings.read")),
 ):
     """Fallback / test path: upload a recording instead of (or in addition to) a live call."""
-    meeting = get_meeting_or_404(session, meeting_id)
+    meeting = get_managed_meeting(session, meeting_id, user)
     if meeting.status in ("live", "processing"):
         raise HTTPException(409, "Встреча сейчас обрабатывается или идёт звонок")
     ext = Path(file.filename or "").suffix.lower()
@@ -100,8 +93,14 @@ def upload_audio(
     target_dir = Path(get_settings().recordings_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
     target = target_dir / f"upload-{meeting_id}-{uuid.uuid4().hex[:8]}{ext}"
+    written = 0
     with target.open("wb") as out:
         while chunk := file.file.read(1024 * 1024):
+            written += len(chunk)
+            if written > MAX_UPLOAD_BYTES:
+                out.close()
+                target.unlink(missing_ok=True)
+                raise HTTPException(413, "Файл больше 1 ГБ")
             out.write(chunk)
 
     meeting.audio_path = str(target)
@@ -121,9 +120,10 @@ def upload_transcript(
     body: TranscriptIn,
     background: BackgroundTasks,
     session: Session = Depends(get_session),
+    user: User = Depends(require("meetings.read")),
 ):
     """Manual transcript (F4 AC2 fallback). One utterance per line, optionally 'Name: text'."""
-    meeting = get_meeting_or_404(session, meeting_id)
+    meeting = get_managed_meeting(session, meeting_id, user)
     if meeting.status in ("live", "processing"):
         raise HTTPException(409, "Встреча сейчас обрабатывается или идёт звонок")
     lines = [ln.strip() for ln in body.text.splitlines() if ln.strip()]
@@ -143,9 +143,14 @@ def upload_transcript(
 
 
 @router.post("/{meeting_id}/reprocess", response_model=MeetingOut, status_code=202)
-def reprocess(meeting_id: int, background: BackgroundTasks, session: Session = Depends(get_session)):
+def reprocess(
+    meeting_id: int,
+    background: BackgroundTasks,
+    session: Session = Depends(get_session),
+    user: User = Depends(require("meetings.read")),
+):
     """Re-run the NLP step on the stored transcript (e.g. after swapping the drafter)."""
-    meeting = get_meeting_or_404(session, meeting_id)
+    meeting = get_managed_meeting(session, meeting_id, user)
     if meeting.status in ("live", "processing"):
         raise HTTPException(409, "Встреча сейчас обрабатывается или идёт звонок")
     has_text = session.exec(select(Segment.id).where(Segment.meeting_id == meeting_id)).first()

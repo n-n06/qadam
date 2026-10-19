@@ -1,90 +1,128 @@
-import { useEffect } from "react";
+import { Anchor, Badge, Group, List, Loader, Modal, Select, SimpleGrid, Stack, Text, TextInput, Timeline, Title } from "@mantine/core";
+import { IconHistory } from "@tabler/icons-react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
 import { useMe } from "../context.jsx";
 import { dateTime, dayMonth, TASK_STATUS } from "../format.js";
 import { useLoad } from "../hooks.js";
+import { canEditTask } from "../permissions.js";
+import { Banner, UserAvatar } from "./ui.jsx";
+
+const NONE = "none";
+const STATUS_OPTIONS = Object.entries(TASK_STATUS).map(([value, label]) => ({ value, label }));
 
 /** Task detail with editable status / assignee / due date and the activity history (F3). */
 export default function TaskModal({ taskId, onClose, onChanged }) {
-  const { users, me, byId } = useMe();
+  const { me, can, activeUsers, byId } = useMe();
   const { data: task, error, reload } = useLoad(() => api.task(taskId), [taskId]);
+  const [saveError, setSaveError] = useState(null);
 
-  useEffect(() => {
-    const onKey = (e) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  const editable = task ? canEditTask(me, can, task) : false;
+  const people = [{ value: NONE, label: "Не указан" }, ...activeUsers.map((u) => ({ value: String(u.id), label: u.name }))];
 
   const save = async (patch) => {
-    await api.updateTask(taskId, { ...patch, user_id: me.id });
+    try {
+      await api.updateTask(taskId, patch);
+      setSaveError(null);
+    } catch (e) {
+      setSaveError(e.message);
+    }
     await reload(true);
     onChanged?.();
   };
 
   return (
-    <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Задача">
-        {error ? <div className="banner error">{error.message}</div> : null}
-        {!task ? null : (
-          <>
-            <div className="modal-head">
-              <span className="key">{task.key}</span>
-              <button className="btn small" onClick={onClose}>Закрыть</button>
+    <Modal
+      opened
+      onClose={onClose}
+      size="lg"
+      title={task ? <Badge variant="light" size="lg" ff="monospace">{task.key}</Badge> : null}
+    >
+      {error ? <Banner kind="error">{error.message}</Banner> : null}
+      {!task ? (
+        <Group justify="center" py="xl"><Loader size="sm" /></Group>
+      ) : (
+        <Stack gap="lg">
+          <div>
+            <Title order={3}>{task.title}</Title>
+            {task.description ? <Text c="dimmed" mt={6}>{task.description}</Text> : null}
+          </div>
+
+          {saveError ? <Banner kind="error">{saveError}</Banner> : null}
+          {!editable ? (
+            <Banner kind="info">
+              Менять задачу могут исполнитель, автор или руководитель.
+            </Banner>
+          ) : null}
+
+          <SimpleGrid cols={{ base: 1, sm: 3 }}>
+            <Select
+              label="Статус"
+              data={STATUS_OPTIONS}
+              value={task.status}
+              onChange={(v) => v && save({ status: v })}
+              allowDeselect={false}
+              disabled={!editable}
+            />
+            <Select
+              label="Исполнитель"
+              data={people}
+              value={task.assignee_id ? String(task.assignee_id) : NONE}
+              onChange={(v) => save({ assignee_id: v && v !== NONE ? Number(v) : null })}
+              allowDeselect={false}
+              disabled={!editable}
+              searchable
+            />
+            <TextInput
+              key={task.due_text ?? ""}
+              label="Срок"
+              defaultValue={task.due_text ?? ""}
+              placeholder="Не указан"
+              disabled={!editable}
+              onBlur={(e) => e.currentTarget.value.trim() !== (task.due_text ?? "") && save({ due_text: e.currentTarget.value })}
+            />
+          </SimpleGrid>
+
+          {task.acceptance_criteria.length ? (
+            <div>
+              <Text size="sm" fw={600} mb={6}>Критерии готовности</Text>
+              <List size="sm" spacing={4}>
+                {task.acceptance_criteria.map((c) => <List.Item key={c}>{c}</List.Item>)}
+              </List>
             </div>
-            <h3>{task.title}</h3>
-            {task.description ? <p className="desc">{task.description}</p> : null}
-            {task.acceptance_criteria.length ? (
-              <>
-                <div className="label">Критерии готовности</div>
-                <ul>{task.acceptance_criteria.map((c) => <li key={c}>{c}</li>)}</ul>
-              </>
-            ) : null}
+          ) : null}
 
-            <div className="row">
-              <label className="field">
-                <span>Статус</span>
-                <select value={task.status} onChange={(e) => save({ status: e.target.value })}>
-                  {Object.entries(TASK_STATUS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                </select>
-              </label>
-              <label className="field">
-                <span>Исполнитель</span>
-                <select value={task.assignee_id ?? ""} onChange={(e) => save({ assignee_id: e.target.value ? Number(e.target.value) : null })}>
-                  <option value="">Не указан</option>
-                  {users.map((u) => <option key={u.id} value={u.id}>{u.name}</option>)}
-                </select>
-              </label>
-              <label className="field">
-                <span>Срок</span>
-                <input
-                  defaultValue={task.due_text ?? ""}
-                  placeholder="Не указан"
-                  onBlur={(e) => e.target.value.trim() !== (task.due_text ?? "") && save({ due_text: e.target.value })}
-                />
-              </label>
+          {task.origin_meeting_id ? (
+            <div className="quote">
+              Из встречи{" "}
+              <Anchor component={Link} to={`/meetings/${task.origin_meeting_id}`} onClick={onClose}>
+                «{task.origin_meeting_title}»
+              </Anchor>
+              {task.origin_quote ? <> — «{task.origin_quote}»</> : null}
             </div>
+          ) : null}
 
-            {task.origin_meeting_id ? (
-              <div className="quote">
-                Из встречи <Link to={`/meetings/${task.origin_meeting_id}`} onClick={onClose}>«{task.origin_meeting_title}»</Link>
-                {task.origin_quote ? <> — «{task.origin_quote}»</> : null}
-              </div>
-            ) : null}
-
-            <div className="label">История</div>
-            <ul className="history">
-              {task.events.map((ev) => (
-                <li key={ev.id}>
-                  <span>{ev.text}{ev.actor_id && byId[ev.actor_id] ? ` · ${byId[ev.actor_id].name}` : ""}</span>
-                  <time>{dateTime(ev.created_at)}</time>
-                </li>
-              ))}
-            </ul>
-            <p className="hint">Создана {dayMonth(task.created_at)}</p>
-          </>
-        )}
-      </div>
-    </div>
+          <div>
+            <Group gap={6} mb="sm">
+              <IconHistory size={16} />
+              <Text size="sm" fw={600}>История</Text>
+            </Group>
+            <Timeline bulletSize={26} lineWidth={2}>
+              {task.events.map((ev) => {
+                const actor = ev.actor_id ? byId[ev.actor_id] : null;
+                return (
+                  <Timeline.Item key={ev.id} bullet={<UserAvatar user={actor} name={actor ? undefined : "Q"} size={22} />}>
+                    <Text size="sm">{ev.text}</Text>
+                    <Text size="xs" c="dimmed">{actor ? `${actor.name} · ` : ""}{dateTime(ev.created_at)}</Text>
+                  </Timeline.Item>
+                );
+              })}
+            </Timeline>
+          </div>
+          <Text size="xs" c="dimmed">Создана {dayMonth(task.created_at)}</Text>
+        </Stack>
+      )}
+    </Modal>
   );
 }

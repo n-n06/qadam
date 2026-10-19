@@ -6,7 +6,8 @@ from sqlmodel import Session, func, select
 
 from ..db import get_session
 from ..models import DraftTask, Meeting, Task, TaskEvent, User, utcnow
-from ..schemas import DraftOut, DraftPatch, ReviewAction, TaskOut
+from ..schemas import DraftOut, DraftPatch, TaskOut
+from ..security import require
 from ..serializers import draft_out, task_out
 
 router = APIRouter(prefix="/api/drafts", tags=["review"])
@@ -22,7 +23,11 @@ def _pending_or_error(session: Session, draft_id: int) -> DraftTask:
 
 
 @router.get("", response_model=list[DraftOut])
-def list_drafts(status: Optional[str] = "pending", session: Session = Depends(get_session)):
+def list_drafts(
+    status: Optional[str] = "pending",
+    session: Session = Depends(get_session),
+    _: User = Depends(require("drafts.read")),
+):
     query = select(DraftTask).order_by(DraftTask.id)
     if status:
         query = query.where(DraftTask.status == status)
@@ -30,7 +35,12 @@ def list_drafts(status: Optional[str] = "pending", session: Session = Depends(ge
 
 
 @router.patch("/{draft_id}", response_model=DraftOut)
-def edit_draft(draft_id: int, body: DraftPatch, session: Session = Depends(get_session)):
+def edit_draft(
+    draft_id: int,
+    body: DraftPatch,
+    session: Session = Depends(get_session),
+    _: User = Depends(require("drafts.review")),
+):
     """Edit before approval (F6 AC1). `assignee_id: null` / `due_text: null` mean 'not specified'."""
     draft = _pending_or_error(session, draft_id)
     data = body.model_dump(exclude_unset=True)
@@ -53,9 +63,9 @@ def edit_draft(draft_id: int, body: DraftPatch, session: Session = Depends(get_s
 
 
 @router.post("/{draft_id}/approve", response_model=TaskOut, status_code=201)
-def approve_draft(draft_id: int, body: Optional[ReviewAction] = None, session: Session = Depends(get_session)):
+def approve_draft(draft_id: int, session: Session = Depends(get_session), user: User = Depends(require("drafts.review"))):
     draft = _pending_or_error(session, draft_id)
-    actor_id = body.user_id if body else None
+    actor_id = user.id
     meeting = session.get(Meeting, draft.meeting_id)
 
     number = (session.exec(select(func.max(Task.number))).one() or 0) + 1
@@ -68,6 +78,7 @@ def approve_draft(draft_id: int, body: Optional[ReviewAction] = None, session: S
         due_text=draft.due_text,
         origin_meeting_id=draft.meeting_id,
         origin_quote=draft.source_quote,
+        created_by_id=actor_id,
     )
     session.add(task)
     session.flush()
@@ -81,9 +92,9 @@ def approve_draft(draft_id: int, body: Optional[ReviewAction] = None, session: S
 
 
 @router.post("/{draft_id}/reject", response_model=DraftOut)
-def reject_draft(draft_id: int, body: Optional[ReviewAction] = None, session: Session = Depends(get_session)):
+def reject_draft(draft_id: int, session: Session = Depends(get_session), user: User = Depends(require("drafts.review"))):
     draft = _pending_or_error(session, draft_id)
-    draft.status, draft.reviewed_by_id, draft.reviewed_at = "rejected", (body.user_id if body else None), utcnow()
+    draft.status, draft.reviewed_by_id, draft.reviewed_at = "rejected", user.id, utcnow()
     session.add(draft)
     session.commit()
     session.refresh(draft)

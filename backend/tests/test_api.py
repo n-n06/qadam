@@ -19,7 +19,7 @@ def test_edit_then_approve_moves_draft_to_backlog(client):  # F6 AC1
     r = client.patch(f"/api/drafts/{draft['id']}", json={"title": "Выгрузка отчёта в Excel", "due_text": None})
     assert r.status_code == 200 and r.json()["due_text"] is None
 
-    task = client.post(f"/api/drafts/{draft['id']}/approve", json={"user_id": 2}).json()
+    task = client.post(f"/api/drafts/{draft['id']}/approve").json()
     assert task["key"] == "QAD-12" and task["title"] == "Выгрузка отчёта в Excel"
     assert task["origin_meeting_title"] == "Планирование спринта"
     assert client.get("/api/drafts").json() == []
@@ -37,10 +37,11 @@ def test_reject_never_reaches_backlog(client):
 
 def test_task_status_change_is_logged(client):
     task = client.get("/api/tasks").json()[0]
-    r = client.patch(f"/api/tasks/{task['id']}", json={"status": "done", "user_id": 1})
+    r = client.patch(f"/api/tasks/{task['id']}", json={"status": "done"})
     assert r.json()["status"] == "done"
     events = client.get(f"/api/tasks/{task['id']}").json()["events"]
     assert "В работе → Готово" in events[0]["text"]
+    assert events[0]["actor_id"] == 2  # taken from the token, not from the request body
 
 
 def test_manual_transcript_creates_drafts_without_inventing_fields(client):
@@ -80,5 +81,5 @@ def test_transcription_failure_is_visible_not_silent(client, monkeypatch):  # F4
 
 def test_call_token_needs_livekit_config(client):
     meeting = client.post("/api/meetings", json={"title": "Звонок"}).json()
-    r = client.post(f"/api/meetings/{meeting['id']}/call/token", json={"user_id": 1})
+    r = client.post(f"/api/meetings/{meeting['id']}/call/token")
     assert r.status_code == 503

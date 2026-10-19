@@ -1,21 +1,63 @@
 from datetime import datetime
 from typing import Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, computed_field
+
+from .permissions import Role
 
 TaskStatus = Literal["todo", "in_progress", "done"]
 
 
-class UserIn(BaseModel):
-    name: str = Field(min_length=1, max_length=80)
-    role: Literal["lead", "member"] = "member"
+# ------------------------------------------------------------------ auth / users
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = Field(min_length=8, max_length=128)
 
 
 class UserOut(BaseModel):
+    """Public profile: what every team member may see about a colleague."""
+
     model_config = ConfigDict(from_attributes=True)
     id: int
     name: str
     role: str
+    is_active: bool = True
+
+
+class UserAdminOut(UserOut):
+    email: Optional[str]
+    created_at: Optional[datetime]
+
+
+class MeOut(UserAdminOut):
+    permissions: list[str]
+
+
+class TokenOut(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: MeOut
+
+
+class UserCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    role: Role = "member"
+
+
+class UserUpdate(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=80)
+    email: Optional[EmailStr] = None
+    role: Optional[Role] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = Field(default=None, min_length=8, max_length=128)
 
 
 class SegmentOut(BaseModel):
@@ -51,10 +93,6 @@ class DraftPatch(BaseModel):
     due_text: Optional[str] = None
 
 
-class ReviewAction(BaseModel):
-    user_id: Optional[int] = None
-
-
 class MeetingCreate(BaseModel):
     title: str = Field(min_length=1, max_length=200)
 
@@ -65,6 +103,7 @@ class MeetingOut(BaseModel):
     title: str
     created_at: datetime
     status: str
+    created_by_id: Optional[int] = None
     summary: str
     skipped_note: str
     error: str
@@ -83,16 +122,11 @@ class TranscriptIn(BaseModel):
     text: str = Field(min_length=1)
 
 
-class TokenRequest(BaseModel):
-    user_id: int
-
-
 class TaskCreate(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     description: str = ""
     assignee_id: Optional[int] = None
     due_text: Optional[str] = None
-    user_id: Optional[int] = None
 
 
 class TaskPatch(BaseModel):
@@ -101,7 +135,6 @@ class TaskPatch(BaseModel):
     status: Optional[TaskStatus] = None
     assignee_id: Optional[int] = None
     due_text: Optional[str] = None
-    user_id: Optional[int] = None  # who made the change (for activity history)
 
 
 class EventOut(BaseModel):
@@ -124,6 +157,7 @@ class TaskOut(BaseModel):
     status: str
     origin_meeting_id: Optional[int]
     origin_quote: str
+    created_by_id: Optional[int] = None
     created_at: datetime
     origin_meeting_title: Optional[str] = None
     origin_meeting_date: Optional[datetime] = None

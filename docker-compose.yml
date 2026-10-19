@@ -47,6 +47,11 @@ services:
       WHISPER_MODEL: ${WHISPER_MODEL}
       WHISPER_LANGUAGE: ${WHISPER_LANGUAGE}
       DRAFTER: ${DRAFTER:-placeholder}
+      JWT_SECRET: ${JWT_SECRET:-}   # empty = random per start (everyone logged out on restart)
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-qadam-demo}
       CORS_ORIGINS: http://localhost:5173
     volumes:
       - ./data/recordings:/data/recordings      # ... and are read here

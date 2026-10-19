@@ -27,6 +27,19 @@ class Settings(BaseSettings):
     livekit_api_key: str = ""
     livekit_api_secret: str = ""
 
+    # auth. Empty jwt_secret = random per process (fine for dev, logs everyone out on restart).
+    jwt_secret: str = ""
+    access_token_minutes: int = 15
+    refresh_token_days: int = 14
+    cookie_secure: bool = False  # set true behind HTTPS
+    bcrypt_rounds: int = 12
+    # Bootstrap admin, created on startup if no user has this email.
+    admin_email: str = ""
+    admin_password: str = ""
+    admin_name: str = "Администратор"
+    # Password of the seeded demo users (SEED_DEMO=true).
+    demo_password: str = "qadam-demo"
+
 
 @lru_cache
 def get_settings() -> Settings:

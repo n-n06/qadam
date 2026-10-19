@@ -7,7 +7,8 @@ Meeting-to-task platform: **audio call → recording → Whisper transcript → 
 
 | Layer | Tech |
 | --- | --- |
-| Frontend | React 18 + Vite + React Router, UI ported from `qadam-mock.html` (Russian) |
+| Frontend | React 18 + Vite + React Router, **Mantine 7** UI kit (official Figma community kit uses the same tokens) + Tabler icons, light/dark theme |
+| Auth / RBAC | JWT access token (in memory) + rotating refresh token (httpOnly cookie), bcrypt, roles admin / lead / member |
 | Backend | Python 3.11+, FastAPI, SQLModel (SQLite by default, any SQLAlchemy URL works) |
 | Audio calls | **LiveKit** (SDK chosen in T6): `livekit-client` in the browser, `livekit-api` + Egress on the server |
 | Transcription | **faster-whisper** (CTranslate2 build of OpenAI Whisper), runs on your own hardware |
@@ -22,10 +23,42 @@ Meeting-to-task platform: **audio call → recording → Whisper transcript → 
 | **F6** Human review gate | `ReviewPage.jsx`, `routers/drafts.py`. Edit / approve / reject. Unreviewed drafts exist *only* in the review queue, never in backlog or board (F6 AC2). |
 | **F1** Backlog + Kanban board | `BacklogPage.jsx`, `BoardPage.jsx` (drag & drop), `routers/tasks.py`, manual task creation as the pilot fallback. |
 | **F3** Task detail + activity history | `components/TaskModal.jsx`, `TaskEvent` model. |
+| **F7** Login + roles (RBAC) | `security.py`, `permissions.py`, `routers/auth.py`, `routers/users.py`, `LoginPage.jsx`, `TeamPage.jsx`. See below. |
 
-Screens map 1:1 to the mock: **Звонок** (5), **Встречи** (1), **Проверка** (2), **Задачи** (3), **Доска** (4).
+Screens map 1:1 to the mock: **Звонок** (5), **Встречи** (1), **Проверка** (2), **Задачи** (3), **Доска** (4), plus **Вход** and **Команда** (admin only).
 
-Deliberately *not* in this MVP (per A2/A4): sprints (F2), RBAC (F7 — there is no login, the sidebar "Вы" switch just says who is acting), transcript-snippet traceability beyond the quote on the review card (F9), video/screen share (F11), speaker diarization (see limitations).
+## Auth & roles (F7)
+
+Demo users (with `SEED_DEMO=true`), password `qadam-demo` (`DEMO_PASSWORD`):
+
+| User | E-mail | Role |
+| --- | --- | --- |
+| Алия | aliya@qadam.kz | admin |
+| Ерлан | erlan@qadam.kz | lead |
+| Айгерим | aigerim@qadam.kz | member |
+
+For a real deployment set `SEED_DEMO=false`, `JWT_SECRET`, `ADMIN_EMAIL` / `ADMIN_PASSWORD` (the first admin is created on startup), and `COOKIE_SECURE=true` behind HTTPS. Further users are added by an admin on **Команда**.
+
+| Permission | member | lead | admin |
+| --- | :-: | :-: | :-: |
+| See meetings, drafts, tasks, team | ✓ | ✓ | ✓ |
+| Create meetings, join calls, create tasks | ✓ | ✓ | ✓ |
+| Upload audio/transcript, reprocess, end call | own meetings | any | any |
+| Edit / move tasks | assigned to or created by them | any | any |
+| Approve / edit / reject AI drafts (F6) | — | ✓ | ✓ |
+| Manage users, roles, passwords | — | — | ✓ |
+
+The table lives in one place: `backend/app/permissions.py`. Endpoints use `Depends(require("<permission>"))`; ownership checks sit next to the endpoint. The frontend hides controls using the permission list from `/api/auth/me`, but the API is what enforces it.
+
+How sessions work:
+- `POST /api/auth/login` → access JWT (15 min) in the body, refresh token in an `httpOnly`, `SameSite=Strict` cookie scoped to `/api/auth`. The browser keeps the access token in memory only.
+- On 401 the frontend calls `POST /api/auth/refresh` once (the refresh token is rotated). Re-use of an old refresh token revokes all sessions of that user.
+- The role and `is_active` are read from the DB on every request: a demotion or deactivation applies immediately.
+- The actor (who approved a draft, who moved a task, who joins a call) comes from the token; the API no longer accepts a `user_id` from the client.
+- 5 failed logins per IP+e-mail in 15 min → 429. Passwords: bcrypt (SHA-256 pre-hash, so >72-byte passwords are fully used).
+- An existing SQLite DB from before auth is migrated on startup (new columns are added; demo users get their e-mail/password).
+
+Deliberately *not* in this MVP (per A2/A4): sprints (F2), transcript-snippet traceability beyond the quote on the review card (F9), video/screen share (F11), speaker diarization (see limitations).
 
 ## Run it
 
@@ -69,7 +102,7 @@ Without LiveKit (empty `LIVEKIT_API_KEY`) the app still works end to end through
 ### Tests
 
 ```bash
-cd backend && pytest
+cd backend && python -m pytest
 ```
 
 ## How a recording becomes tasks
@@ -104,7 +137,8 @@ The default `PlaceholderDrafter` is ~100 lines of keyword/regex rules (Russian +
 
 - **No speaker labels from calls.** The recording is one mixed audio track, so Whisper segments have no speaker. Per-participant track recording or diarization is the next step; until then the transcript shows text and timestamps only (manual transcripts with `Имя: текст` do keep names).
 - **Whisper is not live.** The transcript appears after the call ends (matches F4 AC1: "attached within a few minutes"), so the in-call screen has no live transcript panel like the mock's static one.
-- **No authentication or roles** — anyone can approve a draft; `reviewer` is only displayed. RBAC is planned for Sprint 4 (F7 / C8).
+- Login throttling and the JWT secret fallback are per process. With several API workers set `JWT_SECRET` and move throttling to Redis.
+- No self-service sign-up or "forgot password" e-mail: an admin creates users and resets passwords.
 - Whisper runs in a FastAPI background task inside the API process — fine for one pilot team; move to a queue (RQ / Celery) if several long recordings run at once.
 - Due dates are free text ("пятница"), not calendar dates.
 - Not verified in the sandbox this was written in (no network): `npm install`, the LiveKit/Egress round trip and the FastAPI test suite. The drafting logic was run directly and all frontend files pass a syntax check — expect to fix small things on first run, most likely in the LiveKit/Egress setup.

@@ -1,34 +1,92 @@
-import { createContext, useContext, useEffect, useMemo, useState } from "react";
-import { api } from "./api.js";
+import { Alert, Center, Loader } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { api, refreshSession, setAccessToken, setSessionLostHandler } from "./api.js";
 
-const Ctx = createContext(null);
-export const useMe = () => useContext(Ctx);
+const AuthCtx = createContext(null);
+const TeamCtx = createContext(null);
 
-/** Loads the team and remembers "who am I" (no login in the MVP: RBAC / F7 is planned for Sprint 4). */
-export function UserProvider({ children }) {
-  const [users, setUsers] = useState(null);
-  const [error, setError] = useState(null);
-  const [meId, setMeId] = useState(() => Number(localStorage.getItem("qadam.user")) || null);
+/** { user, login, logout, can, setSession } - `user` is null when logged out, undefined while booting. */
+export const useAuth = () => useContext(AuthCtx);
+
+/** { me, users, byId, can, reloadUsers } - only inside the logged-in part of the app. */
+export const useMe = () => useContext(TeamCtx);
+
+export const FullScreenLoader = () => (
+  <Center h="100vh">
+    <Loader />
+  </Center>
+);
+
+export function AuthProvider({ children }) {
+  const [user, setUser] = useState(undefined);
+
+  const setSession = useCallback((session) => {
+    setAccessToken(session.access_token);
+    setUser(session.user);
+  }, []);
 
   useEffect(() => {
-    api.users().then(setUsers).catch(setError);
+    setSessionLostHandler(() => {
+      setUser(null);
+      notifications.show({ color: "orange", title: "Сессия завершена", message: "Войдите снова, чтобы продолжить." });
+    });
+    // Restore the session from the httpOnly refresh cookie, if there is one.
+    refreshSession()
+      .then((session) => setUser(session.user))
+      .catch(() => setUser(null));
   }, []);
+
+  const value = useMemo(
+    () => ({
+      user,
+      setSession,
+      can: (permission) => Boolean(user?.permissions?.includes(permission)),
+      login: async (email, password) => setSession(await api.login(email, password)),
+      logout: async () => {
+        try {
+          await api.logout();
+        } finally {
+          setAccessToken(null);
+          setUser(null);
+        }
+      },
+    }),
+    [user, setSession]
+  );
+
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;
+}
+
+/** Loads the team directory (names for avatars / assignee pickers). */
+export function TeamProvider({ children }) {
+  const { user, can } = useAuth();
+  const [users, setUsers] = useState(null);
+  const [error, setError] = useState(null);
+
+  const reloadUsers = useCallback(() => api.users().then(setUsers).catch(setError), []);
+  useEffect(() => {
+    reloadUsers();
+  }, [reloadUsers]);
 
   const value = useMemo(() => {
     if (!users) return null;
-    const me = users.find((u) => u.id === meId) || users.find((u) => u.role === "lead") || users[0];
     return {
+      me: user,
       users,
-      me,
+      activeUsers: users.filter((u) => u.is_active),
       byId: Object.fromEntries(users.map((u) => [u.id, u])),
-      setMe: (id) => {
-        localStorage.setItem("qadam.user", String(id));
-        setMeId(id);
-      },
+      can,
+      reloadUsers,
     };
-  }, [users, meId]);
+  }, [users, user, can, reloadUsers]);
 
-  if (error) return <div className="boot">Не удалось подключиться к серверу: {error.message}</div>;
-  if (!value) return <div className="boot">Загрузка…</div>;
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
+  if (error)
+    return (
+      <Center h="100vh" p="md">
+        <Alert color="red" title="Не удалось подключиться к серверу">{error.message}</Alert>
+      </Center>
+    );
+  if (!value) return <FullScreenLoader />;
+  return <TeamCtx.Provider value={value}>{children}</TeamCtx.Provider>;
 }

@@ -7,11 +7,12 @@ from sqlmodel import Session, select
 from ..config import get_settings
 from ..db import get_session
 from ..models import Meeting, User, utcnow
-from ..schemas import MeetingOut, TokenRequest
+from ..schemas import MeetingOut
+from ..security import require
 from ..serializers import meeting_out
 from ..services import livekit_service as lk
 from ..services.pipeline import run_pipeline
-from .meetings import get_meeting_or_404
+from .meetings import get_managed_meeting, get_meeting_or_404
 
 log = logging.getLogger("qadam.calls")
 router = APIRouter(prefix="/api", tags=["calls"])
@@ -25,13 +26,10 @@ def _require_livekit() -> None:
 
 
 @router.post("/meetings/{meeting_id}/call/token")
-def call_token(meeting_id: int, body: TokenRequest, session: Session = Depends(get_session)):
-    """Join token for the browser. The first join flips the meeting to `live`."""
+def call_token(meeting_id: int, session: Session = Depends(get_session), user: User = Depends(require("calls.join"))):
+    """Join token for the browser, issued for the logged-in user. The first join flips the meeting to `live`."""
     _require_livekit()
     meeting = get_meeting_or_404(session, meeting_id)
-    user = session.get(User, body.user_id)
-    if not user:
-        raise HTTPException(404, "Пользователь не найден")
     if meeting.status not in ("scheduled", "live"):
         raise HTTPException(409, "Звонок уже завершён")
     if meeting.status == "scheduled":
@@ -43,9 +41,9 @@ def call_token(meeting_id: int, body: TokenRequest, session: Session = Depends(g
 
 
 @router.post("/meetings/{meeting_id}/call/end", response_model=MeetingOut)
-async def end_call(meeting_id: int, session: Session = Depends(get_session)):
-    """End the call for everybody. LiveKit finalises the recording and then calls our webhook."""
-    meeting = get_meeting_or_404(session, meeting_id)
+async def end_call(meeting_id: int, session: Session = Depends(get_session), user: User = Depends(require("calls.join"))):
+    """End the call for everybody (meeting author, lead or admin). LiveKit finalises the recording, then calls our webhook."""
+    meeting = get_managed_meeting(session, meeting_id, user)
     if meeting.status != "live":
         return meeting_out(session, meeting)
 
